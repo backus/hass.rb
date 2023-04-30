@@ -72,7 +72,7 @@ class HA
 
       case argv[0]
       when 'shades'
-        Command::Shades.parse_cli(argv.drop(1), api: API.from_env(ENV)).run
+        Command::Shades.parse_cli(argv.drop(1), api: API.from_env(ENV))
       when 'help'
         puts usage
       else
