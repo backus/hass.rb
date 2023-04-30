@@ -7,17 +7,14 @@ class HA
   class API
     include Concord.new(:server, :token)
 
-    # Fetch HASS_TOKEN from env
-    def self.from_env(_env)
-      server = ENV.fetch('HASS_SERVER')
-      token = ENV.fetch('HASS_TOKEN')
+    def self.from_env(env)
+      server = env.fetch('HASS_SERVER')
+      token = env.fetch('HASS_TOKEN')
       new(server, token)
     end
 
     def list_shades
-      response = HTTP.headers('Authorization' => "Bearer #{token}")
-                     .get("#{server}/api/states")
-
+      response = get('/api/states')
       response.parse.select { |s| s['attributes']['device_class'] == 'shade' }
               .map { |s| s['entity_id'] }
     end
@@ -33,18 +30,33 @@ class HA
     private
 
     def change_shade_state(entity_id, state:)
-      response = HTTP.headers('Authorization' => "Bearer #{token}")
-                     .post("#{server}/api/services/cover/#{state}_cover",
-                           json: { entity_id: entity_id })
+      post("/api/services/cover/#{state}_cover", json: { entity_id: entity_id })
+    end
 
-      raise "Error: #{response.code} - #{response.body}" if response.code != 200
+    def get(path)
+      unwrap_response(http.get(route(path)))
+    end
 
-      puts "#{state.capitalize}ing #{entity_id}..."
+    def post(path, options)
+      unwrap_response(http.post(route(path), options))
+    end
+
+    def unwrap_response(response)
+      return response if response.status.success?
+
+      raise "Error: #{response.status} - #{response.body}"
+    end
+
+    def http
+      HTTP.headers('Authorization' => "Bearer #{token}")
+    end
+
+    def route(path)
+      "#{server}#{path}"
     end
   end
 
   class CLI
-    # Parse positional command and subcommand then delegate the the subcommand's CLI parser
     def self.parse(argv)
       usage = <<~USAGE
         Usage: ha <command> [options]
@@ -106,66 +118,64 @@ class HA
         end
       end
 
-      class Open < self
-        include anima.add(:entity)
+      class OpenClose < self
+        include AbstractType
 
         def self.parse_cli(argv, api:)
           parser = Slop.parse(argv) do |o|
-            o.banner = 'Usage: ha shades open <entity>'
+            o.banner = "Usage: ha shades #{self::ACTION} [entity1] [entity2] ..."
             o.separator ''
             o.separator 'Options:'
-            o.bool '-a', '--all', 'Open all shades', default: false
+            o.bool '-a', '--all', "#{self::ACTION.capitalize} all shades", default: false
           end
 
           opts = parser.to_h
 
-          entity =
-            if opts.fetch(:all)
-              'all'
-            else
-              parser.arguments[0]
-            end
-
-          new(entity: entity, api: api)
-        end
-
-        def run
-          api.open_shade(entity)
-        end
-      end
-
-      class Close < self
-        include anima.add(:entity)
-
-        def self.parse_cli(argv, api:)
-          parser = Slop.parse(argv) do |o|
-            o.banner = 'Usage: ha shades close <entity>'
-            o.separator ''
-            o.separator 'Options:'
-            o.bool '-a', '--all', 'Close all shades', default: false
+          if opts.fetch(:all) && !parser.arguments.empty?
+            puts 'Error: --all and individual entities are mutually exclusive'
+            puts parser.to_s
+            exit(1)
           end
 
-          opts = parser.to_h
+          if !opts.fetch(:all) && parser.arguments.empty?
+            puts 'Error: Provide either --all or at least one entity ID'
+            puts parser.to_s
+            exit(1)
+          end
 
-          entity =
+          entities =
             if opts.fetch(:all)
-              'all'
+              api.list_shades
             else
-              parser.arguments[0]
+              parser.arguments
             end
 
-          new(entity: entity, api: api)
-        end
-
-        def run
-          api.close_shade(entity)
+          new(entities: entities, api: api)
         end
       end
 
-      class All < self
+      class Open < OpenClose
+        include anima.add(:entities)
+
+        ACTION = 'open'
+
         def run
-          api.list_shades.each do |entity|
+          entities.each do |entity|
+            puts "Opening #{entity}..."
             api.open_shade(entity)
+          end
+        end
+      end
+
+      class Close < OpenClose
+        include anima.add(:entities)
+
+        ACTION = 'close'
+
+        def run
+          entities.each do |entity|
+            puts "Closinging #{entity}..."
+            api.close_shade(entity)
           end
         end
       end
