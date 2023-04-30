@@ -75,8 +75,10 @@ class HA
         Command::Shades.parse_cli(argv.drop(1), api: API.from_env(ENV))
       when 'help'
         puts usage
+        exit 0
       else
         puts usage
+        exit 1
       end
     end
   end
