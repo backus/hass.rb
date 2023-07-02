@@ -62,6 +62,10 @@ class HA
       end
     end
 
+    def update_entity(entity_id, **payload)
+      ws.call('config/entity_registry/update', entity_id:, **payload)
+    end
+
     def ws
       @ws ||= WebSocketAPI.new(server, token)
     end
@@ -363,7 +367,12 @@ class HA
     end
 
     class Entity < self
-      field :id, path: %i[entity_id]
+      field :entity_id
+      field :icon
+      field :device_id
+      field :platform
+      field :original_name
+      field :name
     end
   end
 
