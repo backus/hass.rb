@@ -32,7 +32,7 @@ class HA
     private
 
     def change_shade_state(entity_id, state:)
-      post("/api/services/cover/#{state}_cover", json: { entity_id: entity_id })
+      post("/api/services/cover/#{state}_cover", json: { entity_id: })
     end
 
     def get(path)
@@ -104,11 +104,11 @@ class HA
 
         case subcommand
         when 'list'
-          List.new(api: api)
+          List.new(api:)
         when 'open'
-          Open.parse_cli(sub_argv, api: api)
+          Open.parse_cli(sub_argv, api:)
         when 'close'
-          Close.parse_cli(sub_argv, api: api)
+          Close.parse_cli(sub_argv, api:)
         else
           puts "Error: Unknown command #{subcommand}"
           puts usage
@@ -154,7 +154,7 @@ class HA
               parser.arguments
             end
 
-          new(entities: entities, api: api)
+          new(entities:, api:)
         end
       end
 
