@@ -54,16 +54,24 @@ class HA
       change_shade_state(entity_id, state: 'close')
     end
 
-    def list_entity_registry
-      raw_response = ws.call('config/entity_registry/list')
+    def areas
+      list_registry('area', Response::Area)
+    end
 
-      raw_response.fetch(:result).map do |entity|
-        Response::Entity.new(entity)
-      end
+    def entities
+      list_registry('entity', Response::Entity)
+    end
+
+    def devices
+      list_registry('device', Response::Device)
     end
 
     def update_entity(entity_id, **payload)
       ws.call('config/entity_registry/update', entity_id:, **payload)
+    end
+
+    def update_device(device_id, **payload)
+      ws.call('config/device_registry/update', device_id:, **payload)
     end
 
     def ws
@@ -71,6 +79,19 @@ class HA
     end
 
     private
+
+    def list_registry(name, response_type)
+      api_type     = "config/#{name}_registry/list"
+      api_response = ws.call(api_type)
+
+      deserialize_response_collection(api_response, response_type)
+    end
+
+    def deserialize_response_collection(raw_response, resource_class)
+      raw_response.fetch(:result).map do |entity|
+        resource_class.new(entity)
+      end
+    end
 
     def change_shade_state(entity_id, state:)
       post("/api/services/cover/#{state}_cover", json: { entity_id: })
@@ -367,12 +388,51 @@ class HA
     end
 
     class Entity < self
-      field :entity_id
-      field :icon
+      field :area_id
+      field :config_entry_id
       field :device_id
-      field :platform
-      field :original_name
+      field :disabled_by
+      field :entity_category
+      field :entity_id
+      field :has_entity_name
+      field :hidden_by
+      field :icon
+      field :id
       field :name
+      field :options
+      field :original_name
+      field :platform
+      field :translation_key
+      field :unique_id
+
+      def group?
+        platform == 'group'
+      end
+    end
+
+    class Device < self
+      field :area_id
+      field :configuration_url
+      field :config_entries
+      field :connections
+      field :disabled_by
+      field :entry_type
+      field :hw_version
+      field :id
+      field :identifiers
+      field :manufacturer
+      field :model
+      field :name_by_user
+      field :name
+      field :sw_version
+      field :via_device_id
+    end
+
+    class Area < self
+      field :aliases
+      field :area_id
+      field :name
+      field :picture
     end
   end
 
