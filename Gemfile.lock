@@ -54,12 +54,12 @@ GEM
     parallel (1.22.1)
     parser (3.2.2.0)
       ast (~> 2.4.1)
-    pry (0.13.1)
+    pry (0.14.2)
       coderay (~> 1.1)
       method_source (~> 1.0)
-    pry-byebug (3.9.0)
+    pry-byebug (3.10.0)
       byebug (~> 11.0)
-      pry (~> 0.13.0)
+      pry (>= 0.13, < 0.15)
     public_suffix (5.0.1)
     rainbow (3.1.1)
     rake (13.0.6)
@@ -107,15 +107,14 @@ PLATFORMS
 DEPENDENCIES
   dotenv (~> 2.8)
   hass.rb!
-  pry (~> 0.13.1)
-  pry-byebug (= 3.9.0)
+  pry-byebug (= 3.10)
   rb_sys (~> 0.9.70)
   rspec (~> 3.12)
   rubocop (~> 1.31.1)
   rubocop-rspec (~> 2.11.1)
 
 RUBY VERSION
-   ruby 2.7.7p221
+   ruby 3.2.2p53
 
 BUNDLED WITH
-   2.1.4
+   2.4.15
