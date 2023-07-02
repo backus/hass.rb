@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
+
+require 'bundler/setup'
+require 'pry'
+
+require 'hass'
+
+api = HA::API.from_env(ENV)
+
+puts <<~INFO
+
+  Local variables available for the sake of utility:
+
+      api  # => #{api.class}
+INFO
+
+Pry.start(binding, quiet: true)
