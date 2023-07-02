@@ -20,3 +20,5 @@ gem 'pry-byebug', '3.10'
 gem 'dotenv', '~> 2.8'
 
 gem 'rb_sys', '~> 0.9.70'
+
+gem 'websocket-driver', '~> 0.7'

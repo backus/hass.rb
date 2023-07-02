@@ -1,13 +1,38 @@
 # frozen_string_literal: true
 
+require 'socket'
+require 'logger'
+
 require 'http'
 require 'concord'
 require 'anima'
+require 'memoizable'
 require 'slop'
+require 'websocket/driver'
+
+Thread.abort_on_exception = true
 
 class HA
+  singleton_class.attr_reader :logger
+
+  def self.setup_logger!
+    ha_logger = Logger.new($stderr)
+
+    ha_logger.formatter = proc do |severity, datetime, _, msg|
+      time = datetime.strftime('%-l:%M %p') # Example: 2:25 PM
+      "#{time} [#{severity}] -- #{msg}\n"
+    end
+
+    ha_logger.level = Logger::INFO
+
+    @logger = ha_logger
+  end
+
+  setup_logger!
+
   class API
     include Concord.new(:server, :token)
+    include Memoizable
 
     def self.from_env(env)
       server = env.fetch('HASS_SERVER')
@@ -27,6 +52,14 @@ class HA
 
     def close_shade(entity_id)
       change_shade_state(entity_id, state: 'close')
+    end
+
+    def list_entity_registry
+      ws.call('config/entity_registry/list')
+    end
+
+    def ws
+      @ws ||= WebSocketAPI.new(server, token)
     end
 
     private
@@ -55,6 +88,169 @@ class HA
 
     def route(path)
       "#{server}#{path}"
+    end
+
+    class WebSocketAPI
+      include Concord.new(:socket, :token)
+
+      InvalidAuth = Class.new(StandardError)
+
+      def initialize(http_host, token)
+        super(WS.new(http_host), token)
+
+        self.request_counter = 0
+
+        authenticate
+      end
+
+      def authenticate
+        response = request(type: 'auth', access_token: token)
+        response = socket.pop_inbox if response.fetch(:type) == 'auth_required'
+
+        raise InvalidAuth, response.fetch(:message) if response.fetch(:type) == 'auth_invalid'
+      end
+
+      def call(type, **kwargs)
+        self.request_counter += 1
+
+        request(type:, id: request_counter, **kwargs)
+      end
+
+      private
+
+      def request(**payload)
+        socket.send_json(payload)
+        socket.pop_inbox
+      end
+
+      attr_accessor :request_counter
+    end
+
+    class WS
+      include Anima.new(:driver, :socket, :inbox)
+
+      SOCKET_STATES = %i[uninitialized open closed].freeze
+
+      private :driver
+      private :socket
+
+      def initialize(http_host)
+        host = Addressable::URI.parse(http_host)
+        socket = SocketDriver.new(host)
+        driver = WebSocket::Driver.client(socket)
+
+        self.state  = :uninitialized
+        self.thread = nil
+
+        super(socket:, driver:, inbox: Queue.new)
+
+        setup_driver!
+      end
+
+      def send_text(text)
+        driver.text(text)
+      end
+
+      def send_json(payload)
+        send_text(JSON.dump(payload))
+      end
+
+      def _socket
+        socket
+      end
+
+      def pop_inbox
+        inbox.pop
+      end
+
+      private
+
+      attr_accessor :state, :thread
+
+      def state_is?(given_state)
+        validate_state!(given_state)
+
+        state == given_state
+      end
+
+      def update_state(given_state)
+        validate_state!(given_state)
+
+        HA.logger.debug("Transitioning WS state from #{state} to #{given_state}")
+
+        self.state = given_state
+      end
+
+      def validate_state!(given_state)
+        raise "Invalid state: #{given_state}" unless SOCKET_STATES.include?(given_state)
+      end
+
+      def handle_server_reply(event)
+        response_payload = JSON.parse(event.data, symbolize_names: true)
+        inbox.push(response_payload)
+      end
+
+      def handle_close(event)
+        update_state(:closed)
+        HA.logger.debug("WS connection closed: #{event.inspect}")
+      end
+
+      def handle_open(event)
+        update_state(:open)
+        HA.logger.debug("WS connection opened #{event}")
+      end
+
+      def setup_driver!
+        register_driver_handler(:open, :handle_open)
+        register_driver_handler(:message, :handle_server_reply)
+        register_driver_handler(:close, :handle_close)
+
+        create_listener_thread!
+
+        driver.start
+      end
+
+      def register_driver_handler(driver_event, handler_method_name)
+        driver.on(driver_event, &method(handler_method_name))
+      end
+
+      def create_listener_thread!
+        raise 'Listener thread already exists' if thread
+
+        HA.logger.debug('Creating WS listener thread')
+
+        client = self
+
+        self.thread = Thread.new do
+          driver.parse(client._socket.read) until state_is?(:closed)
+        end
+      end
+
+      class SocketDriver
+        include Concord.new(:host, :tcp_socket)
+
+        ENDPOINT = '/api/websocket'
+
+        def initialize(host)
+          tcp_socket = TCPSocket.new(host.host, host.port)
+
+          super(host, tcp_socket)
+        end
+
+        def url
+          "ws://#{host.host}:#{host.port}#{ENDPOINT}"
+        end
+
+        def write(packet)
+          HA.logger.debug("Sending WS packet: #{packet}")
+
+          tcp_socket.write(packet)
+        end
+
+        def read
+          tcp_socket.readpartial(4096)
+        end
+      end
     end
   end
 
