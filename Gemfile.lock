@@ -5,6 +5,7 @@ PATH
       anima (~> 0.3)
       concord (~> 0.1)
       http (~> 5.1)
+      memoizable (~> 0.4.2)
       slop (~> 4.10)
 
 GEM
@@ -100,6 +101,9 @@ GEM
       unf_ext
     unf_ext (0.0.8.2)
     unicode-display_width (2.4.2)
+    websocket-driver (0.7.5)
+      websocket-extensions (>= 0.1.0)
+    websocket-extensions (0.1.5)
 
 PLATFORMS
   ruby
@@ -112,6 +116,7 @@ DEPENDENCIES
   rspec (~> 3.12)
   rubocop (~> 1.31.1)
   rubocop-rspec (~> 2.11.1)
+  websocket-driver (~> 0.7)
 
 RUBY VERSION
    ruby 3.2.2p53

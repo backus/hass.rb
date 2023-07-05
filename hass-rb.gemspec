@@ -16,8 +16,9 @@ Gem::Specification.new do |spec|
   spec.require_paths = %w[lib]
   spec.executables   = %w[hass]
 
-  spec.add_dependency 'anima',    '~> 0.3'
-  spec.add_dependency 'concord',  '~> 0.1'
-  spec.add_dependency 'http',     '~> 5.1'
-  spec.add_dependency 'slop',     '~> 4.10'
+  spec.add_dependency 'anima',      '~> 0.3'
+  spec.add_dependency 'concord',    '~> 0.1'
+  spec.add_dependency 'http',       '~> 5.1'
+  spec.add_dependency 'memoizable', '~> 0.4.2'
+  spec.add_dependency 'slop',       '~> 4.10'
 end

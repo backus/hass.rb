@@ -1,13 +1,38 @@
 # frozen_string_literal: true
 
+require 'socket'
+require 'logger'
+
 require 'http'
 require 'concord'
 require 'anima'
+require 'memoizable'
 require 'slop'
+require 'websocket/driver'
+
+Thread.abort_on_exception = true
 
 class HA
+  singleton_class.attr_reader :logger
+
+  def self.setup_logger!
+    ha_logger = Logger.new($stderr)
+
+    ha_logger.formatter = proc do |severity, datetime, _, msg|
+      time = datetime.strftime('%-l:%M %p') # Example: 2:25 PM
+      "#{time} [#{severity}] -- #{msg}\n"
+    end
+
+    ha_logger.level = Logger::INFO
+
+    @logger = ha_logger
+  end
+
+  setup_logger!
+
   class API
     include Concord.new(:server, :token)
+    include Memoizable
 
     def self.from_env(env)
       server = env.fetch('HASS_SERVER')
@@ -29,7 +54,49 @@ class HA
       change_shade_state(entity_id, state: 'close')
     end
 
+    def areas
+      list_registry('area', Response::Area)
+    end
+
+    def entities
+      list_registry('entity', Response::Entity)
+    end
+
+    def devices
+      list_registry('device', Response::Device)
+    end
+
+    def update_entity(entity_id, **payload)
+      ws.call('config/entity_registry/update', entity_id:, **payload)
+    end
+
+    def update_device(device_id, **payload)
+      ws.call('config/device_registry/update', device_id:, **payload)
+    end
+
+    def get_entity(entity_id)
+      raw = ws.call('config/entity_registry/get', entity_id:)
+      Response::Entity.new(raw.fetch(:result))
+    end
+
+    def ws
+      @ws ||= WebSocketAPI.new(server, token)
+    end
+
     private
+
+    def list_registry(name, response_type)
+      api_type     = "config/#{name}_registry/list"
+      api_response = ws.call(api_type)
+
+      deserialize_response_collection(api_response, response_type)
+    end
+
+    def deserialize_response_collection(raw_response, resource_class)
+      raw_response.fetch(:result).map do |entity|
+        resource_class.new(entity)
+      end
+    end
 
     def change_shade_state(entity_id, state:)
       post("/api/services/cover/#{state}_cover", json: { entity_id: })
@@ -55,6 +122,329 @@ class HA
 
     def route(path)
       "#{server}#{path}"
+    end
+
+    class WebSocketAPI
+      include Concord.new(:socket, :token)
+
+      InvalidAuth = Class.new(StandardError)
+
+      def initialize(http_host, token)
+        super(WS.new(http_host), token)
+
+        self.request_counter = 0
+
+        authenticate
+      end
+
+      def authenticate
+        response = request(type: 'auth', access_token: token)
+        response = socket.pop_inbox if response.fetch(:type) == 'auth_required'
+
+        raise InvalidAuth, response.fetch(:message) if response.fetch(:type) == 'auth_invalid'
+      end
+
+      def call(type, **kwargs)
+        self.request_counter += 1
+
+        request(type:, id: request_counter, **kwargs)
+      end
+
+      private
+
+      def request(**payload)
+        socket.send_json(payload)
+        socket.pop_inbox
+      end
+
+      attr_accessor :request_counter
+    end
+
+    class WS
+      include Anima.new(:driver, :socket, :inbox)
+
+      SOCKET_STATES = %i[uninitialized open closed].freeze
+
+      private :driver
+      private :socket
+
+      def initialize(http_host)
+        host = Addressable::URI.parse(http_host)
+        socket = SocketDriver.new(host)
+        driver = WebSocket::Driver.client(socket)
+
+        self.state  = :uninitialized
+        self.thread = nil
+
+        super(socket:, driver:, inbox: Queue.new)
+
+        setup_driver!
+      end
+
+      def send_text(text)
+        driver.text(text)
+      end
+
+      def send_json(payload)
+        send_text(JSON.dump(payload))
+      end
+
+      def _socket
+        socket
+      end
+
+      def pop_inbox
+        inbox.pop
+      end
+
+      private
+
+      attr_accessor :state, :thread
+
+      def state_is?(given_state)
+        validate_state!(given_state)
+
+        state == given_state
+      end
+
+      def update_state(given_state)
+        validate_state!(given_state)
+
+        HA.logger.debug("Transitioning WS state from #{state} to #{given_state}")
+
+        self.state = given_state
+      end
+
+      def validate_state!(given_state)
+        raise "Invalid state: #{given_state}" unless SOCKET_STATES.include?(given_state)
+      end
+
+      def handle_server_reply(event)
+        response_payload = JSON.parse(event.data, symbolize_names: true)
+        inbox.push(response_payload)
+      end
+
+      def handle_close(event)
+        update_state(:closed)
+        HA.logger.debug("WS connection closed: #{event.inspect}")
+      end
+
+      def handle_open(event)
+        update_state(:open)
+        HA.logger.debug("WS connection opened #{event}")
+      end
+
+      def setup_driver!
+        register_driver_handler(:open, :handle_open)
+        register_driver_handler(:message, :handle_server_reply)
+        register_driver_handler(:close, :handle_close)
+
+        create_listener_thread!
+
+        driver.start
+      end
+
+      def register_driver_handler(driver_event, handler_method_name)
+        driver.on(driver_event, &method(handler_method_name))
+      end
+
+      def create_listener_thread!
+        raise 'Listener thread already exists' if thread
+
+        HA.logger.debug('Creating WS listener thread')
+
+        client = self
+
+        self.thread = Thread.new do
+          driver.parse(client._socket.read) until state_is?(:closed)
+        end
+      end
+
+      class SocketDriver
+        include Concord.new(:host, :tcp_socket)
+
+        ENDPOINT = '/api/websocket'
+
+        def initialize(host)
+          tcp_socket = TCPSocket.new(host.host, host.port)
+
+          super(host, tcp_socket)
+        end
+
+        def url
+          "ws://#{host.host}:#{host.port}#{ENDPOINT}"
+        end
+
+        def write(packet)
+          HA.logger.debug("Sending WS packet: #{packet}")
+
+          tcp_socket.write(packet)
+        end
+
+        def read
+          tcp_socket.readpartial(4096)
+        end
+      end
+    end
+  end
+
+  class Response
+    include Concord.new(:internal_data)
+    include AbstractType
+
+    class MissingFieldError < StandardError
+      include Anima.new(:path, :missing_key, :actual_payload)
+
+      def message
+        <<~ERROR
+          Missing field #{missing_key.inspect} in response payload!
+          Was attempting to access value at path `#{path}`.
+          Payload: #{JSON.pretty_generate(actual_payload)}
+        ERROR
+      end
+    end
+
+    class << self
+      private
+
+      attr_accessor :field_registry
+    end
+
+    def self.register_field(field_name)
+      self.field_registry ||= []
+      field_registry << field_name
+    end
+
+    def self.from_json(raw_json)
+      new(JSON.parse(raw_json, symbolize_names: true))
+    end
+
+    def initialize(internal_data)
+      super(IceNine.deep_freeze(internal_data))
+    end
+
+    def self.field(name, path: [name], wrapper: nil)
+      register_field(name)
+
+      define_method(name) do
+        field(path, wrapper:)
+      end
+    end
+
+    def self.optional_field(name, path: name, wrapper: nil)
+      register_field(name)
+
+      define_method(name) do
+        optional_field(path, wrapper:)
+      end
+    end
+
+    def original_payload
+      internal_data
+    end
+
+    def inspect
+      attr_list = field_list.map do |field_name|
+        "#{field_name}=#{__send__(field_name).inspect}"
+      end.join(' ')
+      "#<#{self.class} #{attr_list}>"
+    end
+
+    private
+
+    # We need to access the registry list from the instance for `#inspect`.
+    # It is just private in terms of the public API which is why we do this
+    # weird private dispatch on our own class.
+    def field_list
+      self.class.__send__(:field_registry)
+    end
+
+    def optional_field(key_path, wrapper: nil)
+      *head, tail = key_path
+
+      parent = field(head)
+      return unless parent.key?(tail)
+
+      wrap_value(parent.fetch(tail), wrapper)
+    end
+
+    def field(key_path, wrapper: nil)
+      value = key_path.reduce(internal_data) do |object, key|
+        object.fetch(key) do
+          raise MissingFieldError.new(
+            path: key_path,
+            missing_key: key,
+            actual_payload: internal_data
+          )
+        end
+      end
+
+      wrap_value(value, wrapper)
+    end
+
+    def wrap_value(value, wrapper)
+      return value unless wrapper
+
+      if value.instance_of?(Array)
+        value.map { |item| wrapper.new(item) }
+      else
+        wrapper.new(value)
+      end
+    end
+
+    class Entity < self
+      field :area_id
+      field :config_entry_id
+      field :device_id
+      field :disabled_by
+      field :entity_category
+      field :entity_id
+      field :has_entity_name
+      field :hidden_by
+      field :icon
+      field :id
+      field :name
+      field :options
+      field :original_name
+      field :platform
+      field :translation_key
+      field :unique_id
+
+      # These are only included on the entity get response
+      optional_field :aliases
+      optional_field :capabilities
+      optional_field :device_class
+      optional_field :original_device_class
+      optional_field :original_icon
+
+      def group?
+        platform == 'group'
+      end
+    end
+
+    class Device < self
+      field :area_id
+      field :configuration_url
+      field :config_entries
+      field :connections
+      field :disabled_by
+      field :entry_type
+      field :hw_version
+      field :id
+      field :identifiers
+      field :manufacturer
+      field :model
+      field :name_by_user
+      field :name
+      field :sw_version
+      field :via_device_id
+    end
+
+    class Area < self
+      field :aliases
+      field :area_id
+      field :name
+      field :picture
     end
   end
 
