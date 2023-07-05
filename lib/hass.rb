@@ -74,6 +74,11 @@ class HA
       ws.call('config/device_registry/update', device_id:, **payload)
     end
 
+    def get_entity(entity_id)
+      raw = ws.call('config/entity_registry/get', entity_id:)
+      Response::Entity.new(raw.fetch(:result))
+    end
+
     def ws
       @ws ||= WebSocketAPI.new(server, token)
     end
@@ -404,6 +409,13 @@ class HA
       field :platform
       field :translation_key
       field :unique_id
+
+      # These are only included on the entity get response
+      optional_field :aliases
+      optional_field :capabilities
+      optional_field :device_class
+      optional_field :original_device_class
+      optional_field :original_icon
 
       def group?
         platform == 'group'
