@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+existing_gem_files() {
+  # List all .gem files in the current directory
+  # Do not error if no .gem files exist
+  ls -1 ./*.gem 2>/dev/null
+}
+
+# If any .gem files exist in the current directory, delete them interactively
+if [ -n "$(existing_gem_files)" ]; then
+  echo "Cleaning up the following .gem files exist in the current directory:"
+  existing_gem_files
+
+  echo "Do you want to delete them? (y/n)"
+  read -r answer
+  if [ "$answer" = "y" ]; then
+    echo "Cleaning up .gem files..."
+    rm ./*.gem
+  else
+    echo "Bailing!"
+    exit 1
+  fi
+fi
+
+# Build the gem
+gem build hass-rb.gemspec
+
+# Install the gem globally
+gem install ./hass.rb*.gem
